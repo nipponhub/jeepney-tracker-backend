@@ -53,6 +53,43 @@ const deviceRouteMap = new Map([
 const DEFAULT_ROUTE_ID = 'Unassigned';
 const STALE_MS = 2 * 60 * 1000; // consider a vehicle "offline" after 2 min of silence
 
+/**
+ * Rolling log of every ping received, successful or not. Kept in memory,
+ * capped at PING_HISTORY_LIMIT entries (oldest dropped first) so it can't
+ * grow unbounded. Good enough for MVP-scale debugging; won't survive a
+ * restart and isn't meant to scale past a handful of test devices.
+ */
+const PING_HISTORY_LIMIT = 300;
+const pingHistory = [];
+
+function recordPing(entry) {
+  const fullEntry = { receivedAt: new Date().toISOString(), ...entry };
+  pingHistory.push(fullEntry);
+  if (pingHistory.length > PING_HISTORY_LIMIT) pingHistory.shift();
+  sendToGoogleSheet(fullEntry);
+}
+
+/**
+ * Forwards a ping entry to a Google Apps Script webhook, which appends it as
+ * a row in a Google Sheet. This is "fire and forget" — we don't await it and
+ * we swallow errors, so a slow or unreachable Sheet can NEVER block or break
+ * the actual GPS ingestion response to Traccar Client.
+ * Configure via the GOOGLE_SHEET_WEBHOOK_URL environment variable on Render.
+ */
+const GOOGLE_SHEET_WEBHOOK_URL = process.env.GOOGLE_SHEET_WEBHOOK_URL || '';
+const SHEET_SHARED_SECRET = process.env.SHEET_SHARED_SECRET || '';
+
+function sendToGoogleSheet(entry) {
+  if (!GOOGLE_SHEET_WEBHOOK_URL) return; // not configured — skip silently
+  fetch(GOOGLE_SHEET_WEBHOOK_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...entry, secret: SHEET_SHARED_SECRET }),
+  }).catch((err) => {
+    console.log(`[SHEET-LOG-FAIL] could not reach Google Sheet webhook: ${err.message}`);
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -124,13 +161,28 @@ app.all('/', (req, res) => {
   const position = normalizePayload(source || {});
 
   if (!position) {
-    // No GPS params on this request — likely just someone opening the bare
-    // URL in a browser. Reply with something friendly instead of an error.
+    // No GPS params on this request — could be a real bad payload from a
+    // device, or just someone opening the bare URL in a browser. Log it as a
+    // failed ping either way so it shows up in /api/ping-history, then reply
+    // with something friendly instead of an error.
+    const rawPreview = JSON.stringify(source).slice(0, 300);
+    recordPing({ success: false, reason: 'unrecognized or missing lat/lon', raw: rawPreview });
+    console.log(`[PING-FAIL] unrecognized payload: ${rawPreview}`);
     return res.status(200).send('Jeepney Live Tracker backend is running.');
   }
 
   vehiclePositions.set(position.deviceId, position);
   io.emit('position', position);
+
+  recordPing({
+    success: true,
+    deviceId: position.deviceId,
+    routeId: position.routeId,
+    lat: position.lat,
+    lon: position.lon,
+    speedKph: position.speedKph,
+  });
+  console.log(`[PING-OK] ${position.deviceId} @ ${position.lat},${position.lon} · ${position.speedKph} km/h`);
 
   // Traccar Client just needs a 200 OK — body content doesn't matter.
   res.status(200).json({ ok: true });
@@ -158,6 +210,18 @@ app.post('/api/devices/:deviceId/route', (req, res) => {
 
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', activeVehicles: vehiclePositions.size, uptime: process.uptime() });
+});
+
+// View recent ping history — newest first. Optional ?deviceId=... filter for
+// successful pings; failed pings (no recognized deviceId) always show, since
+// they're the ones you're usually debugging.
+app.get('/api/ping-history', (req, res) => {
+  const { deviceId } = req.query;
+  let entries = pingHistory;
+  if (deviceId) {
+    entries = entries.filter((e) => !e.success || e.deviceId === deviceId);
+  }
+  res.json(entries.slice().reverse());
 });
 
 // ---------------------------------------------------------------------------
