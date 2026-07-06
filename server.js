@@ -98,14 +98,17 @@ function normalizePayload(source) {
 // Routes
 // ---------------------------------------------------------------------------
 
-// Traccar Client hits this on every GPS update. GET is the default; POST is
-// supported too in case you configure Traccar Client for "POST" requests.
-app.all('/api/positions', (req, res) => {
+// Traccar Client hits the bare Server URL on every GPS update — it does not
+// support a custom path, so this MUST be the root route. GET is the default;
+// POST is supported too in case you configure Traccar Client for "POST" requests.
+app.all('/', (req, res) => {
   const source = Object.keys(req.query).length ? req.query : req.body;
   const position = normalizePayload(source || {});
 
   if (!position) {
-    return res.status(400).json({ error: 'Missing or invalid id/lat/lon' });
+    // No GPS params on this request — likely just someone opening the bare
+    // URL in a browser. Reply with something friendly instead of an error.
+    return res.status(200).send('Jeepney Live Tracker backend is running.');
   }
 
   vehiclePositions.set(position.deviceId, position);
@@ -169,5 +172,5 @@ setInterval(() => {
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`🚌 Jeepney Live Tracker backend running on port ${PORT}`);
-  console.log(`   Webhook URL for Traccar Client: http://<your-host>:${PORT}/api/positions`);
+  console.log(`   Webhook URL for Traccar Client: http://<your-host>:${PORT}/ (root path — no custom path supported)`);
 });
