@@ -51,7 +51,9 @@ const deviceRouteMap = new Map([
 ]);
 
 const DEFAULT_ROUTE_ID = 'Unassigned';
-const STALE_MS = 2 * 60 * 1000; // consider a vehicle "offline" after 2 min of silence
+const STALE_MS = 10 * 60 * 1000; // consider a vehicle "offline" only after 10 min of silence —
+// Android's background location throttling can cause normal gaps of 5-14 minutes,
+// so a shorter cutoff would wrongly remove vehicles that are still actively tracking.
 
 /**
  * Rolling log of every ping received, successful or not. Kept in memory,
@@ -101,7 +103,8 @@ function knotsToKph(knots) {
 
 function metersPerSecondToKph(mps) {
   const n = parseFloat(mps);
-  return Number.isFinite(n) ? Math.round(n * 3.6 * 10) / 10 : 0;
+  if (!Number.isFinite(n) || n < 0) return 0; // Android reports -1 for "speed unknown"
+  return Math.round(n * 3.6 * 10) / 10;
 }
 
 function normalizePayload(source) {
