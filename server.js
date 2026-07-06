@@ -103,6 +103,7 @@ function normalizePayload(source) {
 // POST is supported too in case you configure Traccar Client for "POST" requests.
 app.all('/', (req, res) => {
   const source = Object.keys(req.query).length ? req.query : req.body;
+  console.log('[DEBUG] Incoming request query/body:', JSON.stringify(source));
   const position = normalizePayload(source || {});
 
   if (!position) {
