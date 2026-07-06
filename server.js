@@ -62,19 +62,37 @@ function knotsToKph(knots) {
   return Number.isFinite(n) ? Math.round(n * 1.852 * 10) / 10 : 0;
 }
 
-function normalizePayload(source) {
-  // Traccar Client (OsmAnd protocol) field names
-  const {
-    id,
-    lat,
-    lon,
-    timestamp,
-    speed,   // reported in knots
-    bearing,
-    altitude,
-    batt,
-  } = source;
+function metersPerSecondToKph(mps) {
+  const n = parseFloat(mps);
+  return Number.isFinite(n) ? Math.round(n * 3.6 * 10) / 10 : 0;
+}
 
+function normalizePayload(source) {
+  if (!source) return null;
+
+  // --- Shape 1: nested JSON body (seen from newer Traccar Client versions) ---
+  // { device_id, location: { coords: { latitude, longitude, speed, heading, altitude }, battery: { level }, timestamp } }
+  if (source.location && source.location.coords) {
+    const { coords, timestamp, battery } = source.location;
+    const deviceId = source.device_id;
+    if (!deviceId || coords.latitude === undefined || coords.longitude === undefined) return null;
+
+    return {
+      deviceId: String(deviceId),
+      routeId: deviceRouteMap.get(String(deviceId)) || DEFAULT_ROUTE_ID,
+      lat: parseFloat(coords.latitude),
+      lon: parseFloat(coords.longitude),
+      speedKph: metersPerSecondToKph(coords.speed),
+      bearing: coords.heading !== undefined ? parseFloat(coords.heading) : 0,
+      altitude: coords.altitude !== undefined ? parseFloat(coords.altitude) : null,
+      battery: battery && battery.level !== undefined ? Math.round(battery.level * 100) : null,
+      updatedAt: timestamp ? new Date(timestamp).getTime() : Date.now(),
+    };
+  }
+
+  // --- Shape 2: classic flat OsmAnd-protocol query params ---
+  // ?id=...&lat=...&lon=...&timestamp=...&speed=...&bearing=...
+  const { id, lat, lon, timestamp, speed, bearing, altitude, batt } = source;
   if (!id || lat === undefined || lon === undefined) return null;
 
   const latitude = parseFloat(lat);
@@ -103,7 +121,6 @@ function normalizePayload(source) {
 // POST is supported too in case you configure Traccar Client for "POST" requests.
 app.all('/', (req, res) => {
   const source = Object.keys(req.query).length ? req.query : req.body;
-  console.log('[DEBUG] Incoming request query/body:', JSON.stringify(source));
   const position = normalizePayload(source || {});
 
   if (!position) {
